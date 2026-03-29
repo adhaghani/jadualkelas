@@ -1,15 +1,14 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/rules-of-hooks */
 "use client"
 
 import React from "react"
 import { useMemo, useState } from "react"
 import { format, parseISO } from "date-fns"
-import {
-  TimetableData,
-  CourseSession,
-  CustomColorSettings,
-} from "@/types/timetable"
-import { getEventsByDay } from "@/lib/api"
+import { CourseSession, CustomColorSettings } from "@/types/timetable"
+import { Course } from "@/types/course"
+import { getCourseColor, CoursePalette } from "@/lib/color"
+import { generateCourseKey } from "@/lib/course-transform"
 import { Button } from "@/components/ui/button"
 import {
   HoverCard,
@@ -28,7 +27,7 @@ import {
 } from "lucide-react"
 
 interface WeeklyCalendarProps {
-  data: TimetableData
+  courses: Course[]
   customColors?: Record<string, CustomColorSettings>
   studentId?: string
   onSaveCourse?: (
@@ -66,68 +65,7 @@ const TIME_SLOTS = [
 const GRID_START_HOUR = 8
 const GRID_END_HOUR = 18
 
-const COURSE_COLORS = [
-  {
-    bg: "bg-blue-50",
-    border: "border-blue-200",
-    text: "text-blue-700",
-    hover: "hover:bg-blue-100",
-  },
-  {
-    bg: "bg-emerald-50",
-    border: "border-emerald-200",
-    text: "text-emerald-700",
-    hover: "hover:bg-emerald-100",
-  },
-  {
-    bg: "bg-violet-50",
-    border: "border-violet-200",
-    text: "text-violet-700",
-    hover: "hover:bg-violet-100",
-  },
-  {
-    bg: "bg-amber-50",
-    border: "border-amber-200",
-    text: "text-amber-700",
-    hover: "hover:bg-amber-100",
-  },
-  {
-    bg: "bg-rose-50",
-    border: "border-rose-200",
-    text: "text-rose-700",
-    hover: "hover:bg-rose-100",
-  },
-  {
-    bg: "bg-cyan-50",
-    border: "border-cyan-200",
-    text: "text-cyan-700",
-    hover: "hover:bg-cyan-100",
-  },
-  {
-    bg: "bg-indigo-50",
-    border: "border-indigo-200",
-    text: "text-indigo-700",
-    hover: "hover:bg-indigo-100",
-  },
-  {
-    bg: "bg-orange-50",
-    border: "border-orange-200",
-    text: "text-orange-700",
-    hover: "hover:bg-orange-100",
-  },
-  {
-    bg: "bg-pink-50",
-    border: "border-pink-200",
-    text: "text-pink-700",
-    hover: "hover:bg-pink-100",
-  },
-  {
-    bg: "bg-teal-50",
-    border: "border-teal-200",
-    text: "text-teal-700",
-    hover: "hover:bg-teal-100",
-  },
-]
+// (color palette centrally defined in lib/color.ts)
 
 // ─── Time Parsing Utilities ───────────────────────────────────────────────────
 
@@ -265,50 +203,43 @@ function getDayName(date: Date): string {
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()]
 }
 
-function findFirstWeek(data: TimetableData): Date | null {
-  const weekMap = new Map<string, boolean>()
-
-  Object.keys(data)
-    .sort()
-    .forEach((dateStr) => {
-      if (data[dateStr] === null) return
-      const d = parseISO(dateStr)
-      const day = d.getDay()
-      const monday = new Date(d)
-      monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
-      weekMap.set(format(monday, "yyyy-MM-dd"), true)
-    })
-
-  if (weekMap.size > 0) return parseISO(Array.from(weekMap.keys())[0])
-  return null
+function hasScheduleDataFromCourses(courses: Course[]): boolean {
+  return courses.some((c) => c.Classes && c.Classes.length > 0)
 }
 
-function hasScheduleData(data: TimetableData): boolean {
-  return Object.values(data).some((v) => v !== null)
+function findFirstWeekFromCourses(courses: Course[]): Date | null {
+  const dates = new Set<string>()
+  courses.forEach((c) => {
+    c.Classes.forEach((cls) => {
+      if (cls.date) dates.add(cls.date)
+    })
+  })
+
+  const arr = Array.from(dates).sort()
+  if (arr.length === 0) return null
+
+  const d = parseISO(arr[0])
+  const day = d.getDay()
+  const monday = new Date(d)
+  monday.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
+  return monday
 }
 
 // ─── CourseCard ───────────────────────────────────────────────────────────────
 
 interface CourseCardProps {
   course: CourseSession
-  colorIndex: number
-  customColor?: CustomColorSettings
+  colors?: CustomColorSettings | CoursePalette
 }
 
-function CourseCard({ course, colorIndex, customColor }: CourseCardProps) {
-  const isCustom = !!(
-    customColor?.bg &&
-    customColor?.border &&
-    customColor?.text
-  )
-  const colors = isCustom
-    ? customColor!
-    : COURSE_COLORS[colorIndex % COURSE_COLORS.length]
-  const hoverClass = isCustom ? "" : (colors as (typeof COURSE_COLORS)[0]).hover
+function CourseCard({ course, colors }: CourseCardProps) {
+  const colorsUsed: any =
+    colors ?? ({ bg: "", border: "", text: "" } as CustomColorSettings)
+  const hoverClass = (colorsUsed as CoursePalette).hover ?? ""
 
   return (
     <div
-      className={`h-full w-full cursor-pointer rounded-lg border p-2 text-xs transition-all duration-200 ease-out ${colors.bg} ${colors.border} ${colors.text} ${hoverClass} hover:scale-[1.02] hover:shadow-md focus:ring-2 focus:ring-primary/50 focus:ring-offset-1 focus:outline-none active:scale-[0.98]`}
+      className={`h-full w-full cursor-pointer rounded-lg border p-2 text-xs transition-all duration-200 ease-out ${colorsUsed.bg} ${colorsUsed.border} ${colorsUsed.text} ${hoverClass} hover:scale-[1.02] hover:shadow-md focus:ring-2 focus:ring-primary/50 focus:ring-offset-1 focus:outline-none active:scale-[0.98]`}
       role="button"
       tabIndex={0}
       aria-label={`${course.courseid}: ${course.course_desc}`}
@@ -332,7 +263,7 @@ function CourseCard({ course, colorIndex, customColor }: CourseCardProps) {
 // ─── WeeklyCalendar ───────────────────────────────────────────────────────────
 
 export function WeeklyCalendar({
-  data,
+  courses,
   customColors = {},
   studentId = "",
   onSaveCourse,
@@ -341,8 +272,11 @@ export function WeeklyCalendar({
   const [editingCourse, setEditingCourse] = useState<CourseSession | null>(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
 
-  const hasData = useMemo(() => hasScheduleData(data), [data])
-  const initialWeek = useMemo(() => findFirstWeek(data), [data])
+  const hasData = useMemo(() => hasScheduleDataFromCourses(courses), [courses])
+  const initialWeek = useMemo(
+    () => findFirstWeekFromCourses(courses),
+    [courses]
+  )
 
   const handleEditClick = (course: CourseSession) => {
     setEditingCourse(course)
@@ -417,7 +351,6 @@ export function WeeklyCalendar({
       rowIndex: number
       colIndex: number
       span: number
-      colorIndex: number
     }
     const all: PositionedCourse[] = []
 
@@ -425,7 +358,23 @@ export function WeeklyCalendar({
       const dayDate = weekDates.find((d) => d.dayName === day.id)
       if (!dayDate) return
 
-      const rawEvents = getEventsByDay(data, dayDate.dateStr)
+      // Build raw events from the normalized Course[] shape
+      const rawEvents: CourseSession[] = []
+      courses.forEach((course) => {
+        if (!course.Classes) return
+        course.Classes.forEach((cls) => {
+          if (cls.date !== dayDate.dateStr) return
+          rawEvents.push({
+            course_desc: course.course_desc,
+            courseid: course.courseid,
+            groups: course.groups,
+            masa: cls.masa,
+            bilik: cls.bilik ?? null,
+            lecturer: cls.lecturer ?? null,
+          })
+        })
+      })
+
       const events = mergeConsecutiveSessions(rawEvents)
 
       events.forEach((event, eventIdx) => {
@@ -436,13 +385,12 @@ export function WeeklyCalendar({
           rowIndex: dayIdx + 1,
           colIndex: gridInfo.colIndex,
           span: gridInfo.span,
-          colorIndex: eventIdx,
         })
       })
     })
 
     return all
-  }, [data, weekDates])
+  }, [weekDates, courses])
 
   /**
    * FIX 4 – Cell-overlap fix:
@@ -479,7 +427,11 @@ export function WeeklyCalendar({
         onOpenChange={setEditModalOpen}
         course={editingCourse}
         customColors={
-          editingCourse ? (customColors[editingCourse.courseid] ?? null) : null
+          editingCourse
+            ? (customColors[
+                generateCourseKey(editingCourse.courseid, editingCourse.groups)
+              ] ?? null)
+            : null
         }
         onSave={handleSaveEdit}
       />
@@ -583,13 +535,22 @@ export function WeeklyCalendar({
                           <HoverCard openDelay={100} closeDelay={50}>
                             <HoverCardTrigger asChild>
                               <div className="h-full w-full">
-                                <CourseCard
-                                  course={entry.course}
-                                  colorIndex={entry.colorIndex}
-                                  customColor={
-                                    customColors[entry.course.courseid]
-                                  }
-                                />
+                                {(() => {
+                                  const compositeKey = generateCourseKey(
+                                    entry.course.courseid,
+                                    entry.course.groups
+                                  )
+                                  const computedColors = getCourseColor(
+                                    compositeKey,
+                                    customColors
+                                  )
+                                  return (
+                                    <CourseCard
+                                      course={entry.course}
+                                      colors={computedColors as any}
+                                    />
+                                  )
+                                })()}
                               </div>
                             </HoverCardTrigger>
                             <HoverCardContent

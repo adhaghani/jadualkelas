@@ -49,5 +49,5 @@ export interface CustomColorSettings {
 export interface TimetableWithCustom {
   originalData: TimetableData
   customColors: Record<string, CustomColorSettings> // courseId -> colors
-  customCourses: Record<string, CourseSession> // courseId -> updated data
+  customCourses: Record<string, Partial<CourseSession>> // courseId -> updated data (partial)
 }

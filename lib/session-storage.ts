@@ -8,14 +8,24 @@ import {
   CustomColorSettings,
   CourseSession,
 } from "@/types/timetable"
+import { Course } from "@/types/course"
+import {
+  mapRawTimetableToCourses,
+  generateCourseKey,
+} from "@/lib/course-transform"
 
 const STORAGE_PREFIX = "timetable_"
+const PROCESSED_PREFIX = "processed_timetable_"
 
 /**
  * Get storage key for a student ID
  */
 function getStorageKey(studentId: string): string {
   return `${STORAGE_PREFIX}${studentId}`
+}
+
+function getProcessedKey(studentId: string): string {
+  return `${PROCESSED_PREFIX}${studentId}`
 }
 
 /**
@@ -123,7 +133,7 @@ export function saveCustomColor(
 export function getCustomCourse(
   studentId: string,
   courseId: string
-): CourseSession | null {
+): Partial<CourseSession> | null {
   const data = loadTimetableFromSession(studentId)
   if (!data) return null
 
@@ -136,7 +146,7 @@ export function getCustomCourse(
 export function updateCustomCourse(
   studentId: string,
   courseId: string,
-  courseData: CourseSession
+  courseData: Partial<CourseSession>
 ): void {
   if (!isStorageAvailable()) return
 
@@ -152,7 +162,16 @@ export function updateCustomCourse(
       customCourses: {},
     }
 
-    storageData.customCourses[courseId] = courseData
+    // Sanitize what we persist: only allow editable, non-instance fields.
+    // Prevent persisting `masa` (time) or other instance-specific fields.
+    const allowedKeys = new Set(["course_desc", "bilik", "lecturer"])
+    const safePayload = Object.fromEntries(
+      Object.entries(courseData).filter(
+        ([k, v]) => allowedKeys.has(k) && v !== "" && v != null
+      )
+    ) as Partial<CourseSession>
+
+    storageData.customCourses[courseId] = safePayload
     window.sessionStorage.setItem(key, JSON.stringify(storageData))
   } catch {
     console.error("Failed to update custom course in session storage")
@@ -174,7 +193,7 @@ export function getAllCustomColors(
  */
 export function getAllCustomCourses(
   studentId: string
-): Record<string, CourseSession> {
+): Record<string, Partial<CourseSession>> {
   const data = loadTimetableFromSession(studentId)
   return data?.customCourses || {}
 }
@@ -207,6 +226,64 @@ export function clearCustomData(studentId: string): void {
 }
 
 /**
+ * Save processed Course[] to session storage
+ */
+export function saveProcessedTimetable(
+  studentId: string,
+  courses: Course[]
+): void {
+  if (!isStorageAvailable()) return
+
+  try {
+    const key = getProcessedKey(studentId)
+    window.sessionStorage.setItem(key, JSON.stringify(courses))
+  } catch {
+    console.error("Failed to save processed timetable to session storage")
+  }
+}
+
+/**
+ * Load processed Course[] from session storage
+ */
+export function loadProcessedTimetable(studentId: string): Course[] | null {
+  if (!isStorageAvailable()) return null
+
+  try {
+    const key = getProcessedKey(studentId)
+    const raw = window.sessionStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as Course[]
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Migrate old timetable (TimetableWithCustom) into processed Course[] representation.
+ * If processed data already exists, returns it. Otherwise maps originalData -> Course[] and saves it.
+ */
+export function migrateOldSessionData(studentId: string): Course[] | null {
+  if (!isStorageAvailable()) return null
+
+  try {
+    const existing = loadProcessedTimetable(studentId)
+    if (existing) return existing
+
+    const old = loadTimetableFromSession(studentId)
+    if (!old || !old.originalData) return null
+
+    // Apply any custom overrides when migrating so processed data reflects edits
+    const merged = mergeTimetableWithCustom(studentId, old.originalData)
+    const courses = mapRawTimetableToCourses(merged.data)
+    saveProcessedTimetable(studentId, courses)
+    return courses
+  } catch (e) {
+    console.error("Failed to migrate old session data", e)
+    return null
+  }
+}
+
+/**
  * Merge timetable data with custom overrides
  * Returns the original data with custom colors and courses applied
  */
@@ -229,9 +306,17 @@ export function mergeTimetableWithCustom(
     const daySchedule = mergedData[dateKey]
     if (daySchedule && daySchedule.jadual) {
       daySchedule.jadual = daySchedule.jadual.map((course) => {
-        const customCourse = customCourses[course.courseid]
+        const key = generateCourseKey(course.courseid, course.groups)
+        const customCourse = customCourses[key]
         if (customCourse) {
-          return { ...course, ...customCourse }
+          // Defensive merge: only allow non-instance editable fields to apply.
+          const allowedKeys = new Set(["course_desc", "bilik", "lecturer"])
+          const safeCustom = Object.fromEntries(
+            Object.entries(customCourse).filter(
+              ([k, v]) => allowedKeys.has(k) && v !== "" && v != null
+            )
+          ) as Partial<CourseSession>
+          return { ...course, ...safeCustom }
         }
         return course
       })

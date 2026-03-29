@@ -3,6 +3,7 @@
 
 import { useState, useEffect } from "react"
 import { CourseSession, CustomColorSettings } from "@/types/timetable"
+import { Course } from "@/types/course"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -14,75 +15,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
-
-// Predefined color palettes
-const COURSE_COLORS = [
-  {
-    id: "blue",
-    bg: "bg-blue-100",
-    border: "border-blue-300",
-    text: "text-blue-800",
-  },
-  {
-    id: "green",
-    bg: "bg-green-100",
-    border: "border-green-300",
-    text: "text-green-800",
-  },
-  {
-    id: "purple",
-    bg: "bg-purple-100",
-    border: "border-purple-300",
-    text: "text-purple-800",
-  },
-  {
-    id: "orange",
-    bg: "bg-orange-100",
-    border: "border-orange-300",
-    text: "text-orange-800",
-  },
-  {
-    id: "pink",
-    bg: "bg-pink-100",
-    border: "border-pink-300",
-    text: "text-pink-800",
-  },
-  {
-    id: "teal",
-    bg: "bg-teal-100",
-    border: "border-teal-300",
-    text: "text-teal-800",
-  },
-  {
-    id: "indigo",
-    bg: "bg-indigo-100",
-    border: "border-indigo-300",
-    text: "text-indigo-800",
-  },
-  {
-    id: "amber",
-    bg: "bg-amber-100",
-    border: "border-amber-300",
-    text: "text-amber-800",
-  },
-  {
-    id: "cyan",
-    bg: "bg-cyan-100",
-    border: "border-cyan-300",
-    text: "text-cyan-800",
-  },
-  {
-    id: "rose",
-    bg: "bg-rose-100",
-    border: "border-rose-300",
-    text: "text-rose-800",
-  },
-]
+import { COURSE_COLORS } from "@/lib/color"
 
 interface EditCourseModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  course: CourseSession | null
+  course: Course | CourseSession | null
   customColors: CustomColorSettings | null
   onSave: (course: CourseSession, colors: CustomColorSettings) => void
 }
@@ -102,9 +40,19 @@ export function EditCourseModal({
   // Initialize form when course changes
   useEffect(() => {
     if (course) {
-      setCourseDesc(course.course_desc)
-      setLecturer(course.lecturer || "")
-      setBilik(course.bilik || "")
+      // Course may be a normalized Course (with Classes) or a legacy CourseSession.
+      if ((course as Course).Classes) {
+        const c = course as Course
+        setCourseDesc(c.course_desc)
+        const cls = c.Classes[0]
+        setLecturer(cls?.lecturer || "")
+        setBilik(cls?.bilik || "")
+      } else {
+        const cs = course as CourseSession
+        setCourseDesc(cs.course_desc)
+        setLecturer(cs.lecturer || "")
+        setBilik(cs.bilik || "")
+      }
     }
   }, [course])
 
@@ -130,11 +78,29 @@ export function EditCourseModal({
       text: colorPalette.text,
     }
 
-    const updatedCourse: CourseSession = {
-      ...course,
-      course_desc: courseDesc,
-      lecturer: lecturer || null,
-      bilik: bilik || null,
+    // Normalize the edited fields into a CourseSession for compatibility.
+    // Preserve original values when inputs are left blank to avoid
+    // overwriting with empty strings or nulls.
+    let updatedCourse: CourseSession
+    if ((course as Course).Classes) {
+      const c = course as Course
+      const cls = c.Classes[0]
+      updatedCourse = {
+        course_desc: courseDesc || c.course_desc,
+        courseid: c.courseid,
+        groups: c.groups,
+        masa: cls?.masa ?? "",
+        bilik: bilik !== "" ? bilik : (cls?.bilik ?? null),
+        lecturer: lecturer !== "" ? lecturer : (cls?.lecturer ?? null),
+      }
+    } else {
+      const cs = course as CourseSession
+      updatedCourse = {
+        ...cs,
+        course_desc: courseDesc || cs.course_desc,
+        lecturer: lecturer !== "" ? lecturer : cs.lecturer,
+        bilik: bilik !== "" ? bilik : cs.bilik,
+      }
     }
 
     onSave(updatedCourse, colors)
@@ -145,7 +111,7 @@ export function EditCourseModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-106.25">
         <DialogHeader>
           <DialogTitle>Edit Course</DialogTitle>
           <DialogDescription>

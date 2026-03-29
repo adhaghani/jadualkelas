@@ -13,7 +13,14 @@ import {
   updateCustomCourse,
   saveCustomColor,
   mergeTimetableWithCustom,
+  migrateOldSessionData,
+  saveProcessedTimetable,
 } from "@/lib/session-storage"
+import { Course } from "@/types/course"
+import {
+  mapRawTimetableToCourses,
+  generateCourseKey,
+} from "@/lib/course-transform"
 import { StudentIdInput } from "./student-id-input"
 import { WeeklyCalendar } from "./weekly-calendar"
 import { Card, CardContent } from "@/components/ui/card"
@@ -26,6 +33,9 @@ interface TimetableAppProps {
 export function TimetableApp({ initialStudentId }: TimetableAppProps) {
   const [studentId, setStudentId] = useState(initialStudentId || "")
   const [timetableData, setTimetableData] = useState<TimetableData | null>(null)
+  const [processedCourses, setProcessedCourses] = useState<Course[] | null>(
+    null
+  )
   const [customColors, setCustomColors] = useState<
     Record<string, CustomColorSettings>
   >({})
@@ -38,12 +48,44 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
     (courseId: string, course: CourseSession, colors: CustomColorSettings) => {
       if (!studentId) return
 
-      // Save custom course data and colors to session storage
-      updateCustomCourse(studentId, courseId, course)
-      saveCustomColor(studentId, courseId, colors)
+      // Compute composite per-instance key and save custom data under it
+      const compositeKey = generateCourseKey(course.courseid, course.groups)
 
-      // Trigger refresh to re-merge data
-      setRefreshKey((prev) => prev + 1)
+      // Sanitize payload: only persist editable, non-instance fields.
+      const sanitized: Partial<CourseSession> = {}
+      if (course.course_desc && course.course_desc !== "") {
+        sanitized.course_desc = course.course_desc
+      }
+      if (course.bilik != null && course.bilik !== "") {
+        sanitized.bilik = course.bilik
+      }
+      if (course.lecturer != null && course.lecturer !== "") {
+        sanitized.lecturer = course.lecturer
+      }
+
+      updateCustomCourse(studentId, compositeKey, sanitized)
+      saveCustomColor(studentId, compositeKey, colors)
+
+      // Re-merge saved custom data and update React state so UI reflects edits immediately
+      const cached = loadTimetableFromSession(studentId)
+      if (cached) {
+        const merged = mergeTimetableWithCustom(studentId, cached.originalData)
+        setTimetableData(merged.data)
+        setCustomColors(merged.customColors)
+
+        // Also regenerate processed Course[] and persist it so UI components
+        // consuming the normalized shape receive updated data.
+        try {
+          const courses = mapRawTimetableToCourses(merged.data)
+          saveProcessedTimetable(studentId, courses)
+          setProcessedCourses(courses)
+        } catch (e) {
+          console.error("Failed to regenerate processed timetable", e)
+        }
+      } else {
+        // Fallback: trigger a remount if session storage isn't available
+        setRefreshKey((prev) => prev + 1)
+      }
     },
     [studentId]
   )
@@ -58,10 +100,31 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
       const cachedData = loadTimetableFromSession(id)
 
       if (cachedData) {
+        // Ensure processed Course[] exists (migrate if necessary)
+        let courses: Course[] | null = null
+        try {
+          courses = migrateOldSessionData(id)
+        } catch {
+          // non-fatal
+        }
+
         // Use cached data
         const merged = mergeTimetableWithCustom(id, cachedData.originalData)
         setTimetableData(merged.data)
         setCustomColors(merged.customColors)
+
+        // If migration returned processed courses, use them; otherwise derive now
+        if (courses) {
+          setProcessedCourses(courses)
+        } else {
+          try {
+            const derived = mapRawTimetableToCourses(merged.data)
+            saveProcessedTimetable(id, derived)
+            setProcessedCourses(derived)
+          } catch {
+            // non-fatal
+          }
+        }
       } else {
         // Fetch from API
         const data = await fetchTimetable(id)
@@ -70,6 +133,16 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
 
         // Save to session storage
         saveTimetableToSession(id, data)
+
+        // Generate and persist processed Course[] right away
+        try {
+          const derived = mapRawTimetableToCourses(data)
+          saveProcessedTimetable(id, derived)
+          setProcessedCourses(derived)
+        } catch (e) {
+          // non-fatal
+          console.error("Failed to create processed timetable", e)
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load timetable")
@@ -88,7 +161,7 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
   // Show input form if no student ID submitted yet
   if (!studentId) {
     return (
-      <div className="flex min-h-[400px] flex-col items-center justify-center gap-6">
+      <div className="flex min-h-100 flex-col items-center justify-center gap-6">
         <div className="text-center">
           <h1 className="mb-2 text-3xl font-bold">UITM Student Timetable</h1>
           <p className="text-muted-foreground">
@@ -116,7 +189,7 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
   // Show loading state
   if (isLoading) {
     return (
-      <div className="flex min-h-[400px] flex-col items-center justify-center gap-6">
+      <div className="flex min-h-100 flex-col items-center justify-center gap-6">
         <div className="text-center">
           <h1 className="mb-2 text-2xl font-bold">Loading Timetable...</h1>
           <p className="text-muted-foreground">
@@ -130,7 +203,7 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
   // Show error state
   if (error) {
     return (
-      <div className="flex min-h-[400px] flex-col items-center justify-center gap-6">
+      <div className="flex min-h-100 flex-col items-center justify-center gap-6">
         <Card className="w-full max-w-md border-red-500">
           <CardContent className="pt-6">
             <div className="mb-4 flex items-center gap-2 text-red-500">
@@ -161,7 +234,7 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
         </div>
         <WeeklyCalendar
           key={refreshKey}
-          data={timetableData}
+          courses={processedCourses || []}
           customColors={customColors}
           studentId={studentId}
           onSaveCourse={handleSaveCourse}
