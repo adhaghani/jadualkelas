@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/rules-of-hooks */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client"
 
 import React from "react"
@@ -27,6 +27,8 @@ import {
   Users,
 } from "lucide-react"
 
+// ─── Props ────────────────────────────────────────────────────────────────────
+
 interface WeeklyCalendarProps {
   courses: Course[]
   customColors?: Record<string, CustomColorSettings>
@@ -39,7 +41,30 @@ interface WeeklyCalendarProps {
   onRetry?: () => void
 }
 
-// Days of the week — corresponds to row positions in the grid
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type PositionedCourse = {
+  course: CourseSession
+  rowIndex: number
+  colIndex: number
+  span: number
+}
+
+/**
+ * A RenderGroup is one visual cell in the timetable grid.
+ * It holds one or more PositionedCourses whose time ranges overlap.
+ * colIndex / span describe the merged bounding box covering all entries.
+ */
+type RenderGroup = {
+  entries: PositionedCourse[]
+  rowIndex: number
+  colIndex: number
+  span: number
+  isConflict: boolean
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
 const DAYS = [
   { id: "Mon", label: "Mon" },
   { id: "Tue", label: "Tue" },
@@ -51,32 +76,21 @@ const DAYS = [
 const GRID_START_HOUR = 8
 const GRID_END_HOUR = 20
 
-// Time slots 08:00–20:00 — each column represents one hour
 const TIME_SLOTS = Array.from(
   { length: GRID_END_HOUR - GRID_START_HOUR + 1 },
   (_, i) => `${String(GRID_START_HOUR + i).padStart(2, "0")}:00`
 )
 
-// (color palette centrally defined in lib/color.ts)
+// ─── Time Parsing ─────────────────────────────────────────────────────────────
 
-// ─── Time Parsing Utilities ───────────────────────────────────────────────────
-
-/**
- * Convert a time string like "08:00 AM", "14:00 PM", "17:30" to 24-hour integers.
- * Handles the common data quirk where hours >= 13 already carry PM redundantly.
- */
 function parseTo24Hour(timeStr: string): { hours: number; minutes: number } {
   const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i)
   if (!match) return { hours: 0, minutes: 0 }
-
   let h = parseInt(match[1], 10)
   const m = parseInt(match[2], 10)
   const ampm = match[3]?.toUpperCase()
-
   if (ampm === "AM" && h === 12) h = 0
   else if (ampm === "PM" && h < 12) h += 12
-  // If h >= 13 with PM the hour is already in 24-hour form — leave it alone
-
   return { hours: h, minutes: m }
 }
 
@@ -87,22 +101,13 @@ interface TimeRange {
   endM: number
 }
 
-/**
- * Split "HH:MM AM - HH:MM PM" into start/end hours and minutes.
- * Splits on the first "-" that is preceded by a space to avoid
- * accidentally splitting on a negative sign elsewhere.
- */
 function parseTimeRange(masa: string): TimeRange | null {
-  // Split on " - " or just "-" with surrounding whitespace
   const idx = masa.search(/\s*-\s*(?=\d)/)
   if (idx === -1) return null
-
   const startStr = masa.slice(0, idx).trim()
   const endStr = masa.slice(masa.indexOf("-", idx) + 1).trim()
-
   const start = parseTo24Hour(startStr)
   const end = parseTo24Hour(endStr)
-
   return {
     startH: start.hours,
     startM: start.minutes,
@@ -111,67 +116,41 @@ function parseTimeRange(masa: string): TimeRange | null {
   }
 }
 
-/**
- * Convert a time range string to a zero-based column index and column span.
- *
- * FIX 1 – Half-hour offsets (e.g. "17:30 PM - 19:30 PM"):
- *   Floor the start hour so it snaps to the nearest grid column.
- *
- * FIX 2 – Out-of-bounds end times (e.g. 19:30 > grid end 18:00):
- *   Clamp the end to GRID_END_HOUR so the card never overflows.
- */
 function getCourseGridInfo(
   masa: string
 ): { colIndex: number; span: number } | null {
   const range = parseTimeRange(masa)
   if (!range) return null
-
   const { startH, endH, endM } = range
-
-  // Snap start to floor hour, clamp into grid
   const clampedStart = Math.max(GRID_START_HOUR, startH)
   if (clampedStart >= GRID_END_HOUR) return null
-
-  // If the course ends mid-hour, round up so it fills the partial column
   const endHourCeil = endM > 0 ? endH + 1 : endH
   const clampedEnd = Math.min(GRID_END_HOUR, endHourCeil)
-
-  const colIndex = clampedStart - GRID_START_HOUR // 0-based index into TIME_SLOTS
+  const colIndex = clampedStart - GRID_START_HOUR
   const span = Math.max(1, clampedEnd - clampedStart)
-
   return { colIndex, span }
 }
 
 // ─── Session Merging ──────────────────────────────────────────────────────────
 
-/**
- * FIX 3 – Consecutive same-course sessions (e.g. ENT600 10-12 + 12-13):
- * Merge them into a single entry so the card spans correctly.
- */
 function mergeConsecutiveSessions(events: CourseSession[]): CourseSession[] {
   if (events.length <= 1) return events
-
   const sorted = [...events].sort((a, b) => {
     const ar = parseTimeRange(a.masa)
     const br = parseTimeRange(b.masa)
     if (!ar || !br) return 0
     return ar.startH * 60 + ar.startM - (br.startH * 60 + br.startM)
   })
-
   const merged: CourseSession[] = []
   let current = sorted[0]
-
   for (let i = 1; i < sorted.length; i++) {
     const next = sorted[i]
     const cr = parseTimeRange(current.masa)
     const nr = parseTimeRange(next.masa)
-
     const sameId = current.courseid === next.courseid
     const endMatchesStart =
       cr && nr && cr.endH * 60 + cr.endM === nr.startH * 60 + nr.startM
-
     if (sameId && endMatchesStart) {
-      // Keep the start from current, take the end from next
       const startPart = current.masa
         .slice(0, current.masa.search(/\s*-\s*(?=\d)/))
         .trim()
@@ -201,15 +180,13 @@ function hasScheduleDataFromCourses(courses: Course[]): boolean {
 
 function findFirstWeekFromCourses(courses: Course[]): Date | null {
   const dates = new Set<string>()
-  courses.forEach((c) => {
+  courses.forEach((c) =>
     c.Classes.forEach((cls) => {
       if (cls.date) dates.add(cls.date)
     })
-  })
-
+  )
   const arr = Array.from(dates).sort()
   if (arr.length === 0) return null
-
   const d = parseISO(arr[0])
   const day = d.getDay()
   const monday = new Date(d)
@@ -228,7 +205,6 @@ function CourseCard({ course, colors }: CourseCardProps) {
   const colorsUsed: any =
     colors ?? ({ bg: "", border: "", text: "" } as CustomColorSettings)
   const hoverClass = (colorsUsed as CoursePalette).hover ?? ""
-
   return (
     <div
       className={`h-full w-full cursor-pointer rounded-lg border p-2 text-xs transition-all duration-200 ease-out ${colorsUsed.bg} ${colorsUsed.border} ${colorsUsed.text} ${hoverClass} hover:scale-[1.02] hover:shadow-md focus:ring-2 focus:ring-primary/50 focus:ring-offset-1 focus:outline-none active:scale-[0.98]`}
@@ -248,6 +224,131 @@ function CourseCard({ course, colors }: CourseCardProps) {
           {course.bilik}
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── HoverDetails ─────────────────────────────────────────────────────────────
+
+interface HoverDetailsProps {
+  course: CourseSession
+  conflictCount?: number
+  onEditClick?: (course: CourseSession) => void
+  onSaveCourse?: WeeklyCalendarProps["onSaveCourse"]
+}
+
+function HoverDetails({
+  course,
+  conflictCount = 0,
+  onEditClick,
+  onSaveCourse,
+}: HoverDetailsProps) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-lg font-semibold text-foreground">
+          {course.courseid}
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {course.course_desc}
+        </div>
+      </div>
+      {conflictCount > 0 && (
+        <div className="flex items-center gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-400 dark:ring-red-800">
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          Overlaps with {conflictCount} other course
+          {conflictCount > 1 ? "s" : ""} in this slot
+        </div>
+      )}
+      <div className="space-y-2 text-sm">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Clock className="h-4 w-4" />
+          <span>{course.masa}</span>
+        </div>
+        {course.bilik && (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <MapPin className="h-4 w-4" />
+            <span>{course.bilik}</span>
+          </div>
+        )}
+        {course.lecturer && (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <User className="h-4 w-4" />
+            <span>{course.lecturer}</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Users className="h-4 w-4" />
+          <span>Group {course.groups}</span>
+        </div>
+      </div>
+      {onSaveCourse && onEditClick && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full rounded-lg"
+          onClick={() => onEditClick(course)}
+        >
+          <Pencil className="mr-2 h-3 w-3" />
+          Edit Course
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ─── ConflictStack ────────────────────────────────────────────────────────────
+
+interface ConflictStackProps {
+  entries: PositionedCourse[]
+  customColors: Record<string, CustomColorSettings>
+  onEditClick: (course: CourseSession) => void
+  onSaveCourse?: WeeklyCalendarProps["onSaveCourse"]
+}
+
+function ConflictStack({
+  entries,
+  customColors,
+  onEditClick,
+  onSaveCourse,
+}: ConflictStackProps) {
+  return (
+    <div className="flex h-full w-full flex-col gap-0.5 p-1">
+      {/* Conflict banner */}
+      <div className="flex shrink-0 items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-400 dark:ring-red-800">
+        <AlertTriangle className="h-3 w-3 shrink-0" />
+        Schedule conflict ({entries.length} courses)
+      </div>
+      {/* One card per conflicting course, each with its own hover card */}
+      <div className="flex min-h-0 flex-1 gap-0.5">
+        {entries.map((entry, i) => {
+          const compositeKey = generateCourseKey(
+            entry.course.courseid,
+            entry.course.groups
+          )
+          const computedColors = getCourseColor(compositeKey, customColors)
+          return (
+            <HoverCard key={i} openDelay={100} closeDelay={50}>
+              <HoverCardTrigger asChild>
+                <div className="min-h-0 flex-1">
+                  <CourseCard
+                    course={entry.course}
+                    colors={computedColors as any}
+                  />
+                </div>
+              </HoverCardTrigger>
+              <HoverCardContent side="right" className="w-80 p-4" align="start">
+                <HoverDetails
+                  course={entry.course}
+                  conflictCount={entries.length - 1}
+                  onEditClick={onEditClick}
+                  onSaveCourse={onSaveCourse}
+                />
+              </HoverCardContent>
+            </HoverCard>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -314,7 +415,7 @@ export function WeeklyCalendar({
     )
   }
 
-  // ── Derived data ───────────────────────────────────────────────────────────
+  // ── Week dates ─────────────────────────────────────────────────────────────
   const weekStart = initialWeek
 
   const weekDates = useMemo(() => {
@@ -330,28 +431,16 @@ export function WeeklyCalendar({
     })
   }, [weekStart])
 
-  /**
-   * Build the flat list of positioned courses.
-   *
-   * rowIndex  – 1-based day index (1 = Mon)
-   * colIndex  – 0-based TIME_SLOTS index (0 = 08:00)
-   * span      – how many columns the card should occupy
-   */
-  const coursesWithPosition = useMemo(() => {
-    type PositionedCourse = {
-      course: CourseSession
-      rowIndex: number
-      colIndex: number
-      span: number
-      hasOverlap?: boolean
-    }
-    const all: PositionedCourse[] = []
+  const { groupMap, skipCells } = useMemo(() => {
+    const groupMap = new Map<string, RenderGroup>()
+    const skipCells = new Set<string>()
 
     DAYS.forEach((day, dayIdx) => {
+      const rowIndex = dayIdx + 1
       const dayDate = weekDates.find((d) => d.dayName === day.id)
       if (!dayDate) return
 
-      // Build raw events from the normalized Course[] shape
+      // 1. Collect raw sessions for this day
       const rawEvents: CourseSession[] = []
       courses.forEach((course) => {
         if (!course.Classes) return
@@ -368,72 +457,79 @@ export function WeeklyCalendar({
         })
       })
 
+      // Merge consecutive same-course sessions (e.g. ENT600 10-12 + 12-13)
       const events = mergeConsecutiveSessions(rawEvents)
 
-      events.forEach((event, eventIdx) => {
-        const gridInfo = getCourseGridInfo(event.masa)
-        if (!gridInfo) return
-        all.push({
-          course: event,
-          rowIndex: dayIdx + 1,
-          colIndex: gridInfo.colIndex,
-          span: gridInfo.span,
+      // 2. Map to grid positions; drop anything outside the grid
+      const positioned: PositionedCourse[] = events
+        .map((event) => {
+          const gridInfo = getCourseGridInfo(event.masa)
+          if (!gridInfo) return null
+          return {
+            course: event,
+            rowIndex,
+            colIndex: gridInfo.colIndex,
+            span: gridInfo.span,
+          }
         })
-      })
+        .filter((p): p is PositionedCourse => p !== null)
 
-      // Mark overlaps: count coverage per cell for this day, then flag any
-      // positioned course whose covered cells are shared with others.
-      const coverage = new Map<string, number>()
-      all.forEach((p) => {
-        for (let offset = 0; offset < p.span; offset++) {
-          const key = `${p.rowIndex}-${p.colIndex + offset}`
-          coverage.set(key, (coverage.get(key) || 0) + 1)
-        }
-      })
+      // 3. Sort ascending by start column
+      positioned.sort((a, b) => a.colIndex - b.colIndex)
 
-      // Annotate hasOverlap on each positioned course if any covered cell is contested
-      all.forEach((p) => {
-        let overlap = false
-        for (let offset = 0; offset < p.span; offset++) {
-          const key = `${p.rowIndex}-${p.colIndex + offset}`
-          if ((coverage.get(key) || 0) > 1) {
-            overlap = true
-            break
+      // 4. Interval grouping
+      const processed = new Array(positioned.length).fill(false)
+
+      for (let i = 0; i < positioned.length; i++) {
+        if (processed[i]) continue
+
+        const group: PositionedCourse[] = [positioned[i]]
+        processed[i] = true
+
+        // Track the furthest right edge covered by anything in this group
+        let groupEnd = positioned[i].colIndex + positioned[i].span
+
+        // Expand until stable — needed for chained overlaps
+        let changed = true
+        while (changed) {
+          changed = false
+          for (let j = i + 1; j < positioned.length; j++) {
+            if (processed[j]) continue
+            // Overlap: next course starts before current group ends
+            if (positioned[j].colIndex < groupEnd) {
+              group.push(positioned[j])
+              processed[j] = true
+              groupEnd = Math.max(
+                groupEnd,
+                positioned[j].colIndex + positioned[j].span
+              )
+              changed = true
+            }
           }
         }
-        p.hasOverlap = overlap
-      })
-    })
 
-    return all
-  }, [weekDates, courses])
+        // 5. Commit group
+        const groupStart = positioned[i].colIndex
+        const span = groupEnd - groupStart
+        const key = `${rowIndex}-${groupStart}`
 
-  /**
-   * FIX 4 – Cell-overlap fix:
-   * Track every (row, col) pair that is "covered" by a multi-column span
-   * but is NOT the course's starting column. Those cells must be skipped
-   * during rendering so they don't create overlapping divs.
-   */
-  const occupiedCells = useMemo(() => {
-    const set = new Set<string>()
-    coursesWithPosition.forEach(({ rowIndex, colIndex, span }) => {
-      for (let offset = 1; offset < span; offset++) {
-        set.add(`${rowIndex}-${colIndex + offset}`)
+        groupMap.set(key, {
+          entries: group,
+          rowIndex,
+          colIndex: groupStart,
+          span,
+          isConflict: group.length > 1,
+        })
+
+        // Mark interior cells as skip so they don't render as empty
+        for (let col = groupStart + 1; col < groupEnd; col++) {
+          skipCells.add(`${rowIndex}-${col}`)
+        }
       }
     })
-    return set
-  }, [coursesWithPosition])
 
-  /**
-   * Quick lookup: given (rowIndex, colIndex) → positioned course entry.
-   */
-  const courseMap = useMemo(() => {
-    const map = new Map<string, (typeof coursesWithPosition)[0]>()
-    coursesWithPosition.forEach((entry) => {
-      map.set(`${entry.rowIndex}-${entry.colIndex}`, entry)
-    })
-    return map
-  }, [coursesWithPosition])
+    return { groupMap, skipCells }
+  }, [weekDates, courses])
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -474,7 +570,7 @@ export function WeeklyCalendar({
         )}
       </div>
 
-      {/* Responsive grid container */}
+      {/* Grid */}
       <div className="overflow-x-auto rounded-xl border bg-card">
         <div
           className="grid min-w-200"
@@ -484,15 +580,12 @@ export function WeeklyCalendar({
           }}
         >
           {/* ── Header row ── */}
-          {/* Clock corner */}
           <div
             className="sticky top-0 z-20 flex items-center justify-center border-b bg-muted/80 px-2 py-3 backdrop-blur-sm"
             style={{ gridColumn: 1, gridRow: 1 }}
           >
             <Clock className="h-4 w-4 text-muted-foreground" />
           </div>
-
-          {/* Time-slot headers */}
           {TIME_SLOTS.map((time, timeIdx) => (
             <div
               key={time}
@@ -507,8 +600,7 @@ export function WeeklyCalendar({
 
           {/* ── Day rows ── */}
           {DAYS.map((day, dayIdx) => {
-            const rowIndex = dayIdx + 1 // 1-based
-
+            const rowIndex = dayIdx + 1
             return (
               <React.Fragment key={day.id}>
                 {/* Day label */}
@@ -524,16 +616,12 @@ export function WeeklyCalendar({
                 {/* Time cells */}
                 {TIME_SLOTS.map((timeSlot, timeIdx) => {
                   const cellKey = `${rowIndex}-${timeIdx}`
+                  const group = groupMap.get(cellKey)
 
-                  const entry = courseMap.get(cellKey)
-                  // Skip covered cells only when they do not start their own entry.
-                  // This keeps overlapping subjects visible (e.g. evening classes).
-                  if (!entry && occupiedCells.has(cellKey)) return null
-                  const span = entry?.span ?? 1
+                  // Interior cells of a group's span — skip entirely
+                  if (!group && skipCells.has(cellKey)) return null
 
-                  // Grid column: TIME_SLOTS are in columns 2…N+1
-                  // Use the CSS grid "start / span N" form so the browser
-                  // correctly expands the cell — no col-span-* className needed.
+                  const span = group?.span ?? 1
                   const gridColValue =
                     span > 1 ? `${timeIdx + 2} / span ${span}` : timeIdx + 2
 
@@ -541,94 +629,56 @@ export function WeeklyCalendar({
                     <div
                       key={`${day.id}-${timeSlot}`}
                       className="relative flex items-center justify-center border-b border-l bg-background/50 transition-colors hover:bg-muted/20"
-                      style={{
-                        gridColumn: gridColValue,
-                        gridRow: dayIdx + 2,
-                      }}
+                      style={{ gridColumn: gridColValue, gridRow: dayIdx + 2 }}
                     >
-                      {entry ? (
-                        <div className="flex h-full w-full p-1">
-                          <HoverCard openDelay={100} closeDelay={50}>
-                            <HoverCardTrigger asChild>
-                              <div className="h-full w-full">
-                                {(() => {
-                                  const compositeKey = generateCourseKey(
-                                    entry.course.courseid,
-                                    entry.course.groups
-                                  )
-                                  const computedColors = getCourseColor(
-                                    compositeKey,
-                                    customColors
-                                  )
-                                  return (
-                                    <div className="relative h-full w-full">
+                      {group ? (
+                        group.isConflict ? (
+                          // ── Conflict: 2+ overlapping courses ──────────
+                          <ConflictStack
+                            entries={group.entries}
+                            customColors={customColors}
+                            onEditClick={handleEditClick}
+                            onSaveCourse={onSaveCourse}
+                          />
+                        ) : (
+                          // ── Normal single course ───────────────────────
+                          <div className="flex h-full w-full p-1">
+                            <HoverCard openDelay={100} closeDelay={50}>
+                              <HoverCardTrigger asChild>
+                                <div className="h-full w-full">
+                                  {(() => {
+                                    const entry = group.entries[0]
+                                    const compositeKey = generateCourseKey(
+                                      entry.course.courseid,
+                                      entry.course.groups
+                                    )
+                                    const computedColors = getCourseColor(
+                                      compositeKey,
+                                      customColors
+                                    )
+                                    return (
                                       <CourseCard
                                         course={entry.course}
                                         colors={computedColors as any}
                                       />
-                                      {entry.hasOverlap && (
-                                        <div className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-red-700 ring-1 ring-red-200">
-                                          <AlertTriangle className="h-3 w-3" />
-                                        </div>
-                                      )}
-                                    </div>
-                                  )
-                                })()}
-                              </div>
-                            </HoverCardTrigger>
-                            <HoverCardContent
-                              side="right"
-                              className="w-80 p-4"
-                              align="start"
-                            >
-                              <div className="space-y-3">
-                                <div>
-                                  <div className="text-lg font-semibold text-foreground">
-                                    {entry.course.courseid}
-                                  </div>
-                                  <div className="text-sm text-muted-foreground">
-                                    {entry.course.course_desc}
-                                  </div>
+                                    )
+                                  })()}
                                 </div>
-                                <div className="space-y-2 text-sm">
-                                  <div className="flex items-center gap-2 text-muted-foreground">
-                                    <Clock className="h-4 w-4" />
-                                    <span>{entry.course.masa}</span>
-                                  </div>
-                                  {entry.course.bilik && (
-                                    <div className="flex items-center gap-2 text-muted-foreground">
-                                      <MapPin className="h-4 w-4" />
-                                      <span>{entry.course.bilik}</span>
-                                    </div>
-                                  )}
-                                  {entry.course.lecturer && (
-                                    <div className="flex items-center gap-2 text-muted-foreground">
-                                      <User className="h-4 w-4" />
-                                      <span>{entry.course.lecturer}</span>
-                                    </div>
-                                  )}
-                                  <div className="flex items-center gap-2 text-muted-foreground">
-                                    <Users className="h-4 w-4" />
-                                    <span>Group {entry.course.groups}</span>
-                                  </div>
-                                </div>
-                                {onSaveCourse && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="w-full rounded-lg"
-                                    onClick={() =>
-                                      handleEditClick(entry.course)
-                                    }
-                                  >
-                                    <Pencil className="mr-2 h-3 w-3" />
-                                    Edit Course
-                                  </Button>
-                                )}
-                              </div>
-                            </HoverCardContent>
-                          </HoverCard>
-                        </div>
+                              </HoverCardTrigger>
+                              <HoverCardContent
+                                side="right"
+                                className="w-80 p-4"
+                                align="start"
+                              >
+                                <HoverDetails
+                                  course={group.entries[0].course}
+                                  onEditClick={handleEditClick}
+                                  onSaveCourse={onSaveCourse}
+                                />
+                              </HoverCardContent>
+                            </HoverCard>
+                          </div>
+                        )
                       ) : (
                         <div className="h-20 w-full" />
                       )}
