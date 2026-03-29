@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Clock,
   MapPin,
+  AlertTriangle,
   User,
   Users,
 } from "lucide-react"
@@ -47,23 +48,14 @@ const DAYS = [
   { id: "Fri", label: "Fri" },
 ]
 
-// Time slots 08:00–18:00 — each column represents one hour
-const TIME_SLOTS = [
-  "08:00",
-  "09:00",
-  "10:00",
-  "11:00",
-  "12:00",
-  "13:00",
-  "14:00",
-  "15:00",
-  "16:00",
-  "17:00",
-  "18:00",
-]
-
 const GRID_START_HOUR = 8
-const GRID_END_HOUR = 18
+const GRID_END_HOUR = 20
+
+// Time slots 08:00–20:00 — each column represents one hour
+const TIME_SLOTS = Array.from(
+  { length: GRID_END_HOUR - GRID_START_HOUR + 1 },
+  (_, i) => `${String(GRID_START_HOUR + i).padStart(2, "0")}:00`
+)
 
 // (color palette centrally defined in lib/color.ts)
 
@@ -351,6 +343,7 @@ export function WeeklyCalendar({
       rowIndex: number
       colIndex: number
       span: number
+      hasOverlap?: boolean
     }
     const all: PositionedCourse[] = []
 
@@ -386,6 +379,29 @@ export function WeeklyCalendar({
           colIndex: gridInfo.colIndex,
           span: gridInfo.span,
         })
+      })
+
+      // Mark overlaps: count coverage per cell for this day, then flag any
+      // positioned course whose covered cells are shared with others.
+      const coverage = new Map<string, number>()
+      all.forEach((p) => {
+        for (let offset = 0; offset < p.span; offset++) {
+          const key = `${p.rowIndex}-${p.colIndex + offset}`
+          coverage.set(key, (coverage.get(key) || 0) + 1)
+        }
+      })
+
+      // Annotate hasOverlap on each positioned course if any covered cell is contested
+      all.forEach((p) => {
+        let overlap = false
+        for (let offset = 0; offset < p.span; offset++) {
+          const key = `${p.rowIndex}-${p.colIndex + offset}`
+          if ((coverage.get(key) || 0) > 1) {
+            overlap = true
+            break
+          }
+        }
+        p.hasOverlap = overlap
       })
     })
 
@@ -509,10 +525,10 @@ export function WeeklyCalendar({
                 {TIME_SLOTS.map((timeSlot, timeIdx) => {
                   const cellKey = `${rowIndex}-${timeIdx}`
 
-                  // ── FIX 4: Skip cells that are covered by a preceding span ──
-                  if (occupiedCells.has(cellKey)) return null
-
                   const entry = courseMap.get(cellKey)
+                  // Skip covered cells only when they do not start their own entry.
+                  // This keeps overlapping subjects visible (e.g. evening classes).
+                  if (!entry && occupiedCells.has(cellKey)) return null
                   const span = entry?.span ?? 1
 
                   // Grid column: TIME_SLOTS are in columns 2…N+1
@@ -545,10 +561,17 @@ export function WeeklyCalendar({
                                     customColors
                                   )
                                   return (
-                                    <CourseCard
-                                      course={entry.course}
-                                      colors={computedColors as any}
-                                    />
+                                    <div className="relative h-full w-full">
+                                      <CourseCard
+                                        course={entry.course}
+                                        colors={computedColors as any}
+                                      />
+                                      {entry.hasOverlap && (
+                                        <div className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-100 text-red-700 ring-1 ring-red-200">
+                                          <AlertTriangle className="h-3 w-3" />
+                                        </div>
+                                      )}
+                                    </div>
                                   )
                                 })()}
                               </div>
