@@ -554,13 +554,6 @@ export function WeeklyCalendar({
           <h2 className="text-lg font-semibold text-foreground">
             Weekly Timetable
           </h2>
-          <p className="text-sm text-muted-foreground">
-            {format(weekStart, "MMMM d")} –{" "}
-            {format(
-              new Date(weekStart.getTime() + 4 * 24 * 60 * 60 * 1000),
-              "MMMM d, yyyy"
-            )}
-          </p>
         </div>
         {studentId && (
           <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-1.5 text-sm">

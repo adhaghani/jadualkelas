@@ -224,14 +224,6 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
   if (timetableData) {
     return (
       <div className="flex flex-col gap-6">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={handleReset}
-            className="text-sm text-muted-foreground hover:text-foreground"
-          >
-            View Different Student
-          </button>
-        </div>
         <WeeklyCalendar
           key={refreshKey}
           courses={processedCourses || []}
