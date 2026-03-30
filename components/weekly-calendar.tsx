@@ -11,6 +11,17 @@ import { getCourseColor, CoursePalette } from "@/lib/color"
 import { generateCourseKey } from "@/lib/course-transform"
 import { Button } from "@/components/ui/button"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import {
   HoverCard,
   HoverCardTrigger,
   HoverCardContent,
@@ -39,6 +50,7 @@ interface WeeklyCalendarProps {
     colors: CustomColorSettings
   ) => void
   onRetry?: () => void
+  onDeleteCourseClass?: (courseKey: string, classIds: string[]) => void
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -158,7 +170,15 @@ function mergeConsecutiveSessions(events: CourseSession[]): CourseSession[] {
       const endPart = next.masa
         .slice(next.masa.indexOf("-", dashIdx) + 1)
         .trim()
-      current = { ...current, masa: `${startPart} - ${endPart}` }
+      const mergedClassIds = [
+        ...(current.classIds ?? []),
+        ...(next.classIds ?? []),
+      ]
+      current = {
+        ...current,
+        masa: `${startPart} - ${endPart}`,
+        classIds: mergedClassIds,
+      }
     } else {
       merged.push(current)
       current = next
@@ -235,6 +255,7 @@ interface HoverDetailsProps {
   conflictCount?: number
   onEditClick?: (course: CourseSession) => void
   onSaveCourse?: WeeklyCalendarProps["onSaveCourse"]
+  onDeleteClick?: (course: CourseSession) => void
 }
 
 function HoverDetails({
@@ -242,6 +263,7 @@ function HoverDetails({
   conflictCount = 0,
   onEditClick,
   onSaveCourse,
+  onDeleteClick,
 }: HoverDetailsProps) {
   return (
     <div className="space-y-3">
@@ -282,17 +304,47 @@ function HoverDetails({
           <span>Group {course.groups}</span>
         </div>
       </div>
-      {onSaveCourse && onEditClick && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full rounded-lg"
-          onClick={() => onEditClick(course)}
-        >
-          <Pencil className="mr-2 h-3 w-3" />
-          Edit Course
-        </Button>
-      )}
+
+      <div className="flex items-center gap-1">
+        {onSaveCourse && onEditClick && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onEditClick(course)}
+          >
+            <Pencil className="mr-2 h-3 w-3" />
+            Edit Course
+          </Button>
+        )}
+
+        {onDeleteClick && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" size="sm">
+                Delete Class
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete class</AlertDialogTitle>
+              </AlertDialogHeader>
+              <AlertDialogDescription>
+                This will permanently remove the class from your timetable. This
+                action cannot be undone.
+              </AlertDialogDescription>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => onDeleteClick(course)}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+      </div>
     </div>
   )
 }
@@ -304,6 +356,7 @@ interface ConflictStackProps {
   customColors: Record<string, CustomColorSettings>
   onEditClick: (course: CourseSession) => void
   onSaveCourse?: WeeklyCalendarProps["onSaveCourse"]
+  onDeleteClick?: (course: CourseSession) => void
 }
 
 function ConflictStack({
@@ -311,6 +364,7 @@ function ConflictStack({
   customColors,
   onEditClick,
   onSaveCourse,
+  onDeleteClick,
 }: ConflictStackProps) {
   return (
     <div className="flex h-full w-full flex-col gap-0.5 p-1">
@@ -343,6 +397,7 @@ function ConflictStack({
                   conflictCount={entries.length - 1}
                   onEditClick={onEditClick}
                   onSaveCourse={onSaveCourse}
+                  onDeleteClick={onDeleteClick}
                 />
               </HoverCardContent>
             </HoverCard>
@@ -361,6 +416,7 @@ export function WeeklyCalendar({
   studentId = "",
   onSaveCourse,
   onRetry,
+  onDeleteCourseClass,
 }: WeeklyCalendarProps) {
   const [editingCourse, setEditingCourse] = useState<CourseSession | null>(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
@@ -440,7 +496,7 @@ export function WeeklyCalendar({
       const dayDate = weekDates.find((d) => d.dayName === day.id)
       if (!dayDate) return
 
-      // 1. Collect raw sessions for this day
+      // 1. Collect raw sessions for this day (preserve underlying class ids)
       const rawEvents: CourseSession[] = []
       courses.forEach((course) => {
         if (!course.Classes) return
@@ -453,6 +509,8 @@ export function WeeklyCalendar({
             masa: cls.masa,
             bilik: cls.bilik ?? null,
             lecturer: cls.lecturer ?? null,
+            classIds: cls.id ? [cls.id] : [],
+            date: cls.date,
           })
         })
       })
@@ -632,6 +690,15 @@ export function WeeklyCalendar({
                             customColors={customColors}
                             onEditClick={handleEditClick}
                             onSaveCourse={onSaveCourse}
+                            onDeleteClick={
+                              onDeleteCourseClass
+                                ? (c) =>
+                                    onDeleteCourseClass(
+                                      generateCourseKey(c.courseid, c.groups),
+                                      c.classIds ?? []
+                                    )
+                                : undefined
+                            }
                           />
                         ) : (
                           // ── Normal single course ───────────────────────
@@ -667,6 +734,18 @@ export function WeeklyCalendar({
                                   course={group.entries[0].course}
                                   onEditClick={handleEditClick}
                                   onSaveCourse={onSaveCourse}
+                                  onDeleteClick={
+                                    onDeleteCourseClass
+                                      ? (c) =>
+                                          onDeleteCourseClass(
+                                            generateCourseKey(
+                                              c.courseid,
+                                              c.groups
+                                            ),
+                                            c.classIds ?? []
+                                          )
+                                      : undefined
+                                  }
                                 />
                               </HoverCardContent>
                             </HoverCard>

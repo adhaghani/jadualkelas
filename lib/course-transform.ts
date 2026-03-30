@@ -34,7 +34,10 @@ export function mapRawTimetableToCourses(data: TimetableData): Course[] {
         map.set(key, course)
       }
 
+      const classId = `${key}::${dateKey}::${encodeURIComponent(session.masa)}`
+
       const classInstance: CourseClass = {
+        id: classId,
         masa: session.masa,
         bilik: session.bilik ?? null,
         onlineLink: null,
@@ -64,6 +67,7 @@ export function mapRawCourseSessionToCourse(
     groups: session.groups,
     Classes: [
       {
+        id: `${key}::${date ?? "nodate"}::${encodeURIComponent(session.masa)}`,
         masa: session.masa,
         bilik: session.bilik ?? null,
         onlineLink: null,

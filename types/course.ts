@@ -1,4 +1,6 @@
 export interface CourseClass {
+  /** Stable per-class id for identifying a single class instance */
+  id?: string
   masa: string // Time slot like "08:00 AM - 10:00 AM"
   bilik: string | null // Room, null if online
   onlineLink?: string | null // Online meeting link, null if in-person

@@ -90,6 +90,31 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
     [studentId]
   )
 
+  const handleDeleteCourseClass = useCallback(
+    (courseKey: string, classIds: string[]) => {
+      if (!studentId) return
+      if (!processedCourses) return
+
+      const updated = processedCourses.map((c) => {
+        if (c.id !== courseKey) return c
+        return {
+          ...c,
+          Classes: (c.Classes || []).filter(
+            (cls) => !(cls.id && classIds.includes(cls.id))
+          ),
+        }
+      })
+
+      try {
+        saveProcessedTimetable(studentId, updated)
+        setProcessedCourses(updated)
+      } catch (e) {
+        console.error("Failed to persist timetable after deletion", e)
+      }
+    },
+    [studentId, processedCourses]
+  )
+
   const handleStudentIdSubmit = async (id: string) => {
     setIsLoading(true)
     setError("")
@@ -230,6 +255,7 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
           customColors={customColors}
           studentId={studentId}
           onSaveCourse={handleSaveCourse}
+          onDeleteCourseClass={handleDeleteCourseClass}
         />
       </div>
     )

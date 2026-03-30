@@ -10,6 +10,10 @@ export interface CourseSession {
   masa: string // Time slot like "08:00 AM - 10:00 AM"
   bilik: string | null // Room, can be null
   lecturer: string | null
+  // Optional: underlying class instance ids (from processed Course.Classes)
+  classIds?: string[]
+  // Optional date for this session when derived from a specific calendar day
+  date?: string
 }
 
 export interface DaySchedule {
