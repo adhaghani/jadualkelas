@@ -45,13 +45,25 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
 
   // Handler for saving custom course data
   const handleSaveCourse = useCallback(
-    (courseId: string, course: CourseSession, colors: CustomColorSettings) => {
+    (
+      courseId: string,
+      course: CourseSession,
+      colors: CustomColorSettings,
+      classIds?: string[]
+    ) => {
       if (!studentId) return
 
       // Compute composite per-instance key and save custom data under it
-      const compositeKey = generateCourseKey(course.courseid, course.groups)
+      // Use class-specific key if classIds provided, otherwise fall back to course-level
+      const baseKey = generateCourseKey(course.courseid, course.groups)
+      const compositeKey =
+        classIds && classIds.length > 0
+          ? `${baseKey}::class::${classIds[0]}`
+          : baseKey
 
-      // Sanitize payload: only persist editable, non-instance fields.
+      // Sanitize payload: only persist editable fields.
+      // For class-specific keys, also allow masa and date.
+      const isClassSpecific = compositeKey.includes("::class::")
       const sanitized: Partial<CourseSession> = {}
       if (course.course_desc && course.course_desc !== "") {
         sanitized.course_desc = course.course_desc
@@ -61,6 +73,15 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
       }
       if (course.lecturer != null && course.lecturer !== "") {
         sanitized.lecturer = course.lecturer
+      }
+      // Only persist masa and date for class-specific overrides
+      if (isClassSpecific) {
+        if (course.masa && course.masa !== "") {
+          sanitized.masa = course.masa
+        }
+        if (course.date && course.date !== "") {
+          sanitized.date = course.date
+        }
       }
 
       updateCustomCourse(studentId, compositeKey, sanitized)
@@ -175,12 +196,6 @@ export function TimetableApp({ initialStudentId }: TimetableAppProps) {
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const handleReset = () => {
-    setStudentId("")
-    setTimetableData(null)
-    setError("")
   }
 
   // Show input form if no student ID submitted yet

@@ -107,7 +107,7 @@ export function getEventsByDay(
 export function getWeeksWithData(data: TimetableData): string[][] {
   const dates = getAvailableDates(data).filter((d) => data[d] !== null)
 
-  // Group by week (Monday to Friday)
+  // Group by week (Monday to Sunday)
   const weeks: Map<string, string[]> = new Map()
 
   dates.forEach((date) => {

@@ -3,7 +3,7 @@
 "use client"
 
 import React from "react"
-import { useMemo, useState } from "react"
+import { useMemo, useState, useRef } from "react"
 import { format, parseISO } from "date-fns"
 import { CourseSession, CustomColorSettings } from "@/types/timetable"
 import { Course } from "@/types/course"
@@ -36,7 +36,9 @@ import {
   AlertTriangle,
   User,
   Users,
+  Download,
 } from "lucide-react"
+import { downloadElementAsPng } from "@/lib/export-image"
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -47,7 +49,8 @@ interface WeeklyCalendarProps {
   onSaveCourse?: (
     courseId: string,
     course: CourseSession,
-    colors: CustomColorSettings
+    colors: CustomColorSettings,
+    classIds?: string[]
   ) => void
   onRetry?: () => void
   onDeleteCourseClass?: (courseKey: string, classIds: string[]) => void
@@ -83,6 +86,8 @@ const DAYS = [
   { id: "Wed", label: "Wed" },
   { id: "Thu", label: "Thu" },
   { id: "Fri", label: "Fri" },
+  { id: "Sat", label: "Sat" },
+  { id: "Sun", label: "Sun" },
 ]
 
 const GRID_START_HOUR = 8
@@ -420,6 +425,24 @@ export function WeeklyCalendar({
 }: WeeklyCalendarProps) {
   const [editingCourse, setEditingCourse] = useState<CourseSession | null>(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
+  const gridRef = useRef<HTMLDivElement | null>(null)
+
+  const handleExportImage = async () => {
+    if (!gridRef.current) return
+    try {
+      const hint = studentId ? `timetable_${studentId}` : "timetable"
+      const ts = format(new Date(), "yyyy-MM-dd_HH-mm")
+      const filename = `${hint}_${ts}.png`
+      const scale = 5
+      await downloadElementAsPng(gridRef.current, filename, {
+        scale,
+        background: "#ffffff",
+      })
+    } catch (err) {
+      // keep non-fatal
+      console.error("Failed to export timetable image", err)
+    }
+  }
 
   const hasData = useMemo(() => hasScheduleDataFromCourses(courses), [courses])
   const initialWeek = useMemo(
@@ -434,9 +457,13 @@ export function WeeklyCalendar({
 
   const handleSaveEdit = (
     course: CourseSession,
-    colors: CustomColorSettings
+    colors: CustomColorSettings,
+    classIds?: string[]
   ) => {
-    if (onSaveCourse) onSaveCourse(course.courseid, course, colors)
+    if (onSaveCourse) {
+      // Pass classIds to enable class-specific overrides (keyed by full class ID)
+      onSaveCourse(course.courseid, course, colors, classIds)
+    }
     setEditModalOpen(false)
     setEditingCourse(null)
   }
@@ -475,7 +502,7 @@ export function WeeklyCalendar({
   const weekStart = initialWeek
 
   const weekDates = useMemo(() => {
-    return Array.from({ length: 5 }, (_, i) => {
+    return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(weekStart)
       d.setDate(weekStart.getDate() + i)
       return {
@@ -487,16 +514,33 @@ export function WeeklyCalendar({
     })
   }, [weekStart])
 
+  // Compute which week dates should be visible. If BOTH weekend days
+  // (Saturday and Sunday) have no classes, hide them; otherwise show full week.
+  const visibleWeekDates = useMemo(() => {
+    const sat = weekDates.find((d) => d.dayName === "Sat")
+    const sun = weekDates.find((d) => d.dayName === "Sun")
+    if (!sat || !sun) return weekDates
+
+    const weekendHasClass = courses.some((course) =>
+      (course.Classes ?? []).some(
+        (cls) => cls.date === sat.dateStr || cls.date === sun.dateStr
+      )
+    )
+
+    if (weekendHasClass) return weekDates
+
+    // Remove both weekend days when neither has classes
+    return weekDates.filter((d) => d.dayName !== "Sat" && d.dayName !== "Sun")
+  }, [weekDates, courses])
   const { groupMap, skipCells } = useMemo(() => {
     const groupMap = new Map<string, RenderGroup>()
     const skipCells = new Set<string>()
 
-    DAYS.forEach((day, dayIdx) => {
-      const rowIndex = dayIdx + 1
-      const dayDate = weekDates.find((d) => d.dayName === day.id)
-      if (!dayDate) return
+    // Iterate through visibleWeekDates (actual dates to render)
+    visibleWeekDates.forEach((dayDate, index) => {
+      const rowIndex = index + 1 // Grid row starts at 1 (row 0 is header)
 
-      // 1. Collect raw sessions for this day (preserve underlying class ids)
+      // 1. Collect raw sessions for this specific date (match by exact date string)
       const rawEvents: CourseSession[] = []
       courses.forEach((course) => {
         if (!course.Classes) return
@@ -587,7 +631,7 @@ export function WeeklyCalendar({
     })
 
     return { groupMap, skipCells }
-  }, [weekDates, courses])
+  }, [visibleWeekDates, courses])
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -604,30 +648,43 @@ export function WeeklyCalendar({
             : null
         }
         onSave={handleSaveEdit}
+        weekDates={weekDates}
       />
 
       {/* Week header */}
       <div className="mb-4 flex items-center justify-between px-1">
-        <div>
+        <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold text-foreground">
             Weekly Timetable
           </h2>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportImage}
+            className="hidden sm:inline-flex"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Save as image
+          </Button>
         </div>
-        {studentId && (
-          <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-1.5 text-sm">
-            <Users className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium text-foreground">{studentId}</span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {studentId && (
+            <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-1.5 text-sm">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium text-foreground">{studentId}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Grid */}
       <div className="overflow-x-auto rounded-xl border bg-card">
         <div
+          ref={gridRef}
           className="grid min-w-200"
           style={{
             gridTemplateColumns: `72px repeat(${TIME_SLOTS.length}, minmax(90px, 1fr))`,
-            gridTemplateRows: `auto repeat(${DAYS.length}, minmax(80px, auto))`,
+            gridTemplateRows: `auto repeat(${visibleWeekDates.length}, minmax(80px, auto))`,
           }}
         >
           {/* ── Header row ── */}
@@ -650,17 +707,17 @@ export function WeeklyCalendar({
           ))}
 
           {/* ── Day rows ── */}
-          {DAYS.map((day, dayIdx) => {
+          {visibleWeekDates.map((dayDate, dayIdx) => {
             const rowIndex = dayIdx + 1
             return (
-              <React.Fragment key={day.id}>
+              <React.Fragment key={dayDate.dateStr}>
                 {/* Day label */}
                 <div
-                  className="sticky left-0 z-10 flex flex-col items-center justify-center border-r border-b bg-muted/30 px-2 py-3"
+                  className="sticky left-0 z-10 flex flex-col items-center justify-center border-r border-b bg-muted/30 px-2 py-3 backdrop-blur-2xl"
                   style={{ gridColumn: 1, gridRow: dayIdx + 2 }}
                 >
                   <span className="text-sm font-semibold text-foreground">
-                    {day.label}
+                    {dayDate.dayLabel}
                   </span>
                 </div>
 
@@ -678,7 +735,7 @@ export function WeeklyCalendar({
 
                   return (
                     <div
-                      key={`${day.id}-${timeSlot}`}
+                      key={`${dayDate.dateStr}-${timeSlot}`}
                       className="relative flex items-center justify-center border-b border-l bg-background/50 transition-colors hover:bg-muted/20"
                       style={{ gridColumn: gridColValue, gridRow: dayIdx + 2 }}
                     >

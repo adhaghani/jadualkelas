@@ -162,14 +162,53 @@ export function updateCustomCourse(
       customCourses: {},
     }
 
-    // Sanitize what we persist: only allow editable, non-instance fields.
-    // Prevent persisting `masa` (time) or other instance-specific fields.
-    const allowedKeys = new Set(["course_desc", "bilik", "lecturer"])
+    // Sanitize what we persist: allow `masa`/`date` only for class-specific keys.
+    // Course-specific keys remain restricted to non-instance fields.
+    const allowedKeys = courseId.includes("::class::")
+      ? new Set(["course_desc", "bilik", "lecturer", "masa", "date"])
+      : new Set(["course_desc", "bilik", "lecturer"])
     const safePayload = Object.fromEntries(
       Object.entries(courseData).filter(
         ([k, v]) => allowedKeys.has(k) && v !== "" && v != null
       )
     ) as Partial<CourseSession>
+
+    // If this is a class-specific key and the masa was edited, rename the
+    // stored entry to keep the persisted key in sync with the edited time.
+    // This avoids orphaning overrides when the UI changes the session time.
+    if (courseId.includes("::class::") && safePayload.masa) {
+      const [baseKey, classId] = courseId.split("::class::")
+      if (classId) {
+        const parts = classId.split("::")
+        if (parts.length >= 2) {
+          const oldEncodedMasa = parts[parts.length - 1]
+          const oldMasa = decodeURIComponent(oldEncodedMasa)
+          const dateKey = parts[parts.length - 2]
+          const keyInside = parts.slice(0, parts.length - 2).join("::")
+
+          if (safePayload.masa !== oldMasa) {
+            const newClassId = `${keyInside}::${dateKey}::${encodeURIComponent(
+              safePayload.masa
+            )}`
+            const newCourseId = `${baseKey}::class::${newClassId}`
+
+            // Merge with existing target entry if present to avoid accidental
+            // overwrites; incoming safePayload should override fields.
+            const existingTarget = storageData.customCourses[newCourseId] || {}
+            storageData.customCourses[newCourseId] = {
+              ...existingTarget,
+              ...safePayload,
+            }
+
+            // Remove the old key to complete the rename.
+            delete storageData.customCourses[courseId]
+
+            window.sessionStorage.setItem(key, JSON.stringify(storageData))
+            return
+          }
+        }
+      }
+    }
 
     storageData.customCourses[courseId] = safePayload
     window.sessionStorage.setItem(key, JSON.stringify(storageData))
@@ -301,12 +340,102 @@ export function mergeTimetableWithCustom(
   const mergedData: TimetableData = JSON.parse(JSON.stringify(originalData))
   const customCourses = customData.customCourses
 
-  // Apply custom course data to all dates
+  // Apply custom course data to all dates. This pass also supports moving
+  // a session to a different date when a class-specific override includes
+  // a `date` field different from the original date.
   Object.keys(mergedData).forEach((dateKey) => {
     const daySchedule = mergedData[dateKey]
     if (daySchedule && daySchedule.jadual) {
-      daySchedule.jadual = daySchedule.jadual.map((course) => {
+      const newJadual: typeof daySchedule.jadual = []
+
+      daySchedule.jadual.forEach((course) => {
         const key = generateCourseKey(course.courseid, course.groups)
+        // Build the instance class id used by mapRawTimetableToCourses
+        const classId = `${key}::${dateKey}::${encodeURIComponent(course.masa)}`
+        const classKey = `${key}::class::${classId}`
+
+        // Prefer class-specific overrides when present. If exact key is not
+        // found, try a tolerant lookup that matches the same base key and
+        // date (but may have different masa), preferring an exact masa match.
+        let customClass = customCourses[classKey]
+        if (!customClass) {
+          const prefix = `${key}::class::`
+          let fallbackKey: string | null = null
+          let fallbackVal: Partial<CourseSession> | null = null
+
+          for (const k of Object.keys(customCourses)) {
+            if (!k.startsWith(prefix)) continue
+            const candidateClassId = k.split("::class::")[1]
+            if (!candidateClassId) continue
+            const parts = candidateClassId.split("::")
+            if (parts.length < 2) continue
+            const candidateDate = parts[parts.length - 2]
+            if (candidateDate !== dateKey) continue
+            const candidateEncodedMasa = parts[parts.length - 1]
+            const candidateMasa = decodeURIComponent(candidateEncodedMasa)
+
+            // Prefer exact masa match
+            if (candidateMasa === course.masa) {
+              fallbackKey = k
+              fallbackVal = customCourses[k]
+              break
+            }
+
+            // Otherwise keep the first reasonable candidate
+            if (!fallbackKey) {
+              fallbackKey = k
+              fallbackVal = customCourses[k]
+            }
+          }
+
+          if (fallbackVal) customClass = fallbackVal
+        }
+
+        if (customClass) {
+          const allowedKeys = new Set([
+            "course_desc",
+            "bilik",
+            "lecturer",
+            "masa",
+            "date",
+          ])
+          const safeCustom = Object.fromEntries(
+            Object.entries(customClass).filter(
+              ([k, v]) => allowedKeys.has(k) && v !== "" && v != null
+            )
+          ) as Partial<CourseSession>
+
+          // If the override requests a different date, move the session
+          // to the target date's jadual array. Otherwise apply in-place.
+          if (safeCustom.date && safeCustom.date !== dateKey) {
+            const targetDate = safeCustom.date as string
+            // Ensure target date exists
+            if (!mergedData[targetDate]) {
+              const d = new Date(targetDate)
+              mergedData[targetDate] = {
+                hari: d.toLocaleDateString(undefined, { weekday: "short" }),
+                jadual: [],
+              }
+            }
+            // Check for duplicates before moving to avoid duplicate sessions
+            const existingKeys = mergedData[targetDate].jadual.map(
+              (c) => `${c.courseid}-${c.masa}`
+            )
+            const newKey = `${course.courseid}-${safeCustom.masa || course.masa}`
+            if (!existingKeys.includes(newKey)) {
+              mergedData[targetDate].jadual.push({ ...course, ...safeCustom })
+              // Don't add to newJadual - course is moved to target date
+              return
+            }
+            // If duplicate exists at target, skip entirely (don't add anywhere)
+            return
+          } else {
+            newJadual.push({ ...course, ...safeCustom })
+          }
+          return
+        }
+
+        // Fallback to course-level override
         const customCourse = customCourses[key]
         if (customCourse) {
           // Defensive merge: only allow non-instance editable fields to apply.
@@ -316,10 +445,14 @@ export function mergeTimetableWithCustom(
               ([k, v]) => allowedKeys.has(k) && v !== "" && v != null
             )
           ) as Partial<CourseSession>
-          return { ...course, ...safeCustom }
+          newJadual.push({ ...course, ...safeCustom })
+          return
         }
-        return course
+
+        newJadual.push(course)
       })
+
+      daySchedule.jadual = newJadual
     }
   })
 
